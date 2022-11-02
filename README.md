@@ -48,6 +48,13 @@ Create the NVRAM storage directories on the filesystem:
 This will be automatically loaded by the instrumented kernel through
 `LD_PRELOAD` by modifications to `init/main.c`.
 
+Original sources
+=====
+These sources are imported from the original [FirmAE release](https://github.com/pr0v3rbs/FirmAE/archive/refs/tags/v1.0.zip). As we were not 
+able to find the correct github repo we have created this repo. The 
+original firmadyne repository can be found [here](https://github.com/firmadyne/libnvram).
+
+
 Notes
 =====
 
