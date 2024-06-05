@@ -15,7 +15,7 @@ libnvram_ioctl.so: nvram_ioctl.o
 	$(CC) -c $(CFLAGS) $< -o $@
 
 nvram_ioctl.o: nvram.c
-	$(CC) -c $(CFLAGS) -DFIRMAE_KERNEL $< -o $@
+	$(CC) -c $(CFLAGS) -DEMBA_KERNEL $< -o $@
 
 clean:
 	rm -f *.o libnvram.so libnvram_ioctl.so

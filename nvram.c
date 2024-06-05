@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <mntent.h>
 
 #include "alias.h"
 #include "nvram.h"
@@ -33,6 +34,8 @@
 #undef PATH
 #undef NATIVE
 
+// Integrated multiple updates from https://github.com/rehosting/libnvram
+
 // https://lkml.org/lkml/2007/3/9/10
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + sizeof(typeof(int[1 - 2 * !!__builtin_types_compatible_p(typeof(arr), typeof(&arr[0]))])) * 0)
 
@@ -40,6 +43,7 @@
 
 /* Weak symbol definitions for library functions that may not be present */
 __typeof__(ftok) __attribute__((weak)) ftok;
+__typeof__(setmntent) __attribute__((weak)) setmntent;
 
 /* Global variables */
 static int init = 0;
@@ -49,14 +53,14 @@ static int firmae_nvram = 0;
 
 static void firmae_load_env()
 {
-    char* env = getenv("FIRMAE_NVRAM");
+    char* env = getenv("EMBA_NVRAM");
     if (env && env[0] == 't')
         firmae_nvram = 1;
     is_load_env = 1;
 }
 
 static int sem_get() {
-    int key, semid = 0;
+    int key = 133791337, semid = 0;
     unsigned int timeout = 0;
     struct semid_ds seminfo;
     union semun {
@@ -73,8 +77,8 @@ static int sem_get() {
 
     // Generate key for semaphore based on the mount point
     if (!ftok || (key = ftok(MOUNT_POINT, IPC_KEY)) == -1) {
-        PRINT_MSG("%s\n", "Unable to get semaphore key! Utilize altenative key.. by SR");
-        return -1;
+        // PRINT_MSG("%s ftok %d, key %d\n", "Unable to get semaphore key! Utilize altenative key.. by SR.");
+        key = 133741337; // Hardcoded random value
     }
 
     PRINT_MSG("Key: %x\n", key);
@@ -92,6 +96,8 @@ static int sem_get() {
     }
     else if (errno == EEXIST) {
         // Get the semaphore in non-exclusive mode
+	// PRINT_MSG("%s\n", "waiting ...");
+
         if ((semid = semget(key, 1, 0)) < 0) {
             PRINT_MSG("%s\n", "Unable to get semaphore non-exclusively!");
             return semid;
@@ -100,13 +106,16 @@ static int sem_get() {
         semun.buf = &seminfo;
         // Wait for the semaphore to be initialized
         while (timeout++ < IPC_TIMEOUT) {
+
             semctl(semid, 0, IPC_STAT, semun);
 
             if (semun.buf && semun.buf->sem_otime != 0) {
                 break;
             }
+            if (timeout >= IPC_TIMEOUT)
+                break;
         }
-        if  (timeout >= IPC_TIMEOUT)
+        if (timeout >= IPC_TIMEOUT)
             PRINT_MSG("Waiting for semaphore timeout (Key: %x, Semaphore: %x)...\n", key, semid);
     }
 
@@ -125,17 +134,29 @@ static void sem_lock() {
 
     // If not initialized, check for existing mount before triggering NVRAM init
     if (!init) {
-        if ((mnt = setmntent("/proc/mounts", "r"))) {
-            while ((ent = getmntent_r(mnt, &entry, temp, BUFFER_SIZE))) {
-                if (!strncmp(ent->mnt_dir, MOUNT_POINT, sizeof(MOUNT_POINT) - 2)) {
-                    init = 1;
-                    PRINT_MSG("%s\n", "Already initialized!");
-                    endmntent(mnt);
-                    goto cont;
-                }
+        if (setmntent) {
+            if ((mnt = setmntent("/proc/mounts", "r"))) {
+              while ((ent = getmntent_r(mnt, &entry, temp, BUFFER_SIZE))) {
+                  if (!strncmp(ent->mnt_dir, MOUNT_POINT, sizeof(MOUNT_POINT) - 2)) {
+                      init = 1;
+                      PRINT_MSG("%s\n", "Already initialized!");
+                      endmntent(mnt);
+                      goto cont;
+                  }
+              }
+              endmntent(mnt);
             }
-            endmntent(mnt);
+        } else {
+          // setmntent is unavailable, when we mount we'll touch /mounted in the directory as a flag
+          FILE *f;
+          if ((f = fopen(MOUNT_POINT "/mounted", "rb")) != NULL) {
+            fclose(f);
+            // We were able to open MOUNT_POINT/mounted  - we probably mounted this previously, bail
+            goto cont;
+          }
+          PRINT_MSG("%s\n", "setmntent is unavailable and no MOUNT_POINT/mounted - do nvram init");
         }
+
 
         PRINT_MSG("%s\n", "Triggering NVRAM initialization!");
         nvram_init();
@@ -148,7 +169,7 @@ cont:
         return;
     }
 
-//    PRINT_MSG("%s\n", "Locking semaphore...");
+    // PRINT_MSG("%s\n", "Locking semaphore...");
 
     if (semop(semid, &sembuf, 1) == -1) {
         PRINT_MSG("%s\n", "Unable to lock semaphore!");
@@ -196,6 +217,13 @@ int nvram_init(void) {
         sem_unlock();
         PRINT_MSG("Unable to mount tmpfs on mount point %s!\n", MOUNT_POINT);
         return E_FAILURE;
+    }
+
+    // Touch /mounted so we know it exists if we don't have semset
+    if (!setmntent) {
+      if ((f = fopen(MOUNT_POINT "/mounted", "w+")) == NULL) {
+          PRINT_MSG("%s\n", "Unable open mount_point/mounted");
+      }
     }
 
     // Checked by certain Ralink routers
@@ -418,11 +446,13 @@ int nvram_get_buf(const char *key, char *buf, size_t sz) {
     }
     else
     {
-        PRINT_MSG("\n\n[NVRAM] %d %s\n\n", strlen(key), key);
+	PRINT_MSG("\n\n[NVRAM] %zu %s\n\n", strlen(key), key);
     }
 
-    if (fgets(buf, sz, f) != buf) {
-        buf[0] = '\0';
+    buf[0] = '\0';
+    char tmp[sz];
+    while(fgets(tmp, sz, f)) {
+        strncat (buf, tmp, sz);
     }
 
     fclose(f);
@@ -436,7 +466,8 @@ int nvram_get_buf(const char *key, char *buf, size_t sz) {
 int nvram_get_int(const char *key) {
     char path[PATH_MAX] = MOUNT_POINT;
     FILE *f;
-    int ret;
+    char buf[32]; // Buffer to store ASCII representation of the integer
+    int ret = 0;
 
     if (!key) {
         PRINT_MSG("%s\n", "NULL key!");
@@ -449,18 +480,39 @@ int nvram_get_int(const char *key) {
 
     sem_lock();
 
+    // Try to open the file
     if ((f = fopen(path, "rb")) == NULL) {
         sem_unlock();
         PRINT_MSG("Unable to open key: %s!\n", path);
         return E_FAILURE;
     }
 
-    if (fread(&ret, sizeof(ret), 1, f) != 1) {
+    // Attempt to read the ASCII representation of the integer
+    if (fgets(buf, sizeof(buf), f) != NULL) {
+        // Attempt to convert the read string to an integer
+        char *endptr;
+        long val = strtol(buf, &endptr, 10);
+
+        // Check for conversion errors (no digits found or not all string parsed)
+        if ((endptr != buf && *endptr == '\n') || *endptr == '\0') {
+            ret = (int)val; // Successfully converted ASCII to integer
+        } else {
+            // Reset file pointer and try reading as binary integer
+            fseek(f, 0, SEEK_SET);
+            if (fread(&ret, sizeof(ret), 1, f) != 1) {
+                PRINT_MSG("Unable to read key as binary int: %s!\n", path);
+                fclose(f);
+                sem_unlock();
+                return E_FAILURE;
+            }
+        }
+    } else {
+        PRINT_MSG("Unable to read key: %s!\n", path);
         fclose(f);
         sem_unlock();
-        PRINT_MSG("Unable to read key: %s!\n", path);
         return E_FAILURE;
     }
+
     fclose(f);
     sem_unlock();
 
@@ -471,6 +523,7 @@ int nvram_get_int(const char *key) {
 
 int nvram_getall(char *buf, size_t len) {
     char path[PATH_MAX] = MOUNT_POINT;
+    struct stat path_stat;
     struct dirent *entry;
     size_t pos = 0, ret;
     DIR *dir;
@@ -497,6 +550,11 @@ int nvram_getall(char *buf, size_t len) {
         strncpy(path + strlen(MOUNT_POINT), entry->d_name, ARRAY_SIZE(path) - ARRAY_SIZE(MOUNT_POINT) - 1);
         path[PATH_MAX - 1] = '\0';
 
+        stat(path, &path_stat);
+        if (!S_ISREG(path_stat.st_mode)) {
+            continue;
+        }
+
         if ((ret = snprintf(buf + pos, len - pos, "%s=", entry->d_name)) != strlen(entry->d_name) + 1) {
             closedir(dir);
             sem_unlock();
@@ -513,7 +571,8 @@ int nvram_getall(char *buf, size_t len) {
             return E_FAILURE;
         }
 
-        if (!(ret = fread(temp, sizeof(*temp), BUFFER_SIZE, f))) {
+        ret = fread(temp, sizeof(*temp), BUFFER_SIZE, f);
+        if (ferror(f)) {
             fclose(f);
             closedir(dir);
             sem_unlock();
@@ -700,9 +759,9 @@ static int nvram_set_default_builtin(void) {
 }
 
 static int nvram_set_default_image(void) {
-    PRINT_MSG("%s\n", "Copying overrides from defaults folder!");
+    PRINT_MSG("%s\n", "Copying overrides from EMBA defaults folder!");
     sem_lock();
-    system("/bin/cp "OVERRIDE_POINT"* "MOUNT_POINT);
+    system("/bin/cp "OVERRIDE_POINT"* "MOUNT_POINT" 2>/dev/null");
     sem_unlock();
     return E_SUCCESS;
 }
@@ -737,6 +796,15 @@ int nvram_unset(const char *key) {
         return E_FAILURE;
     }
     sem_unlock();
+    return E_SUCCESS;
+}
+
+int nvram_safe_unset(const char *key) {
+    // If we have a value for this key, unset it. Otherwise no-op
+    // Always return E_SUCCESS(?)
+    if (nvram_get_buf(key, temp, BUFFER_SIZE) == E_SUCCESS) {
+      nvram_unset(key);
+    }
     return E_SUCCESS;
 }
 
@@ -830,7 +898,7 @@ int parse_nvram_from_file(const char *file)
     return E_SUCCESS;
 }
 
-#ifdef FIRMAE_KERNEL
+#ifdef EMBA_KERNEL
 //DIR-615I2, DIR-615I3, DIR-825C1 patch
 int VCTGetPortAutoNegSetting(char *a1, int a2){
     PRINT_MSG("%s\n", "Dealing wth ioctl ...");
