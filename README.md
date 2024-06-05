@@ -33,6 +33,12 @@ features such as thread-local storage. Additionally, many C runtime libraries
 are not built with position-independent code (PIC) to support static
 compilation.
 
+Credits
+=====
+
+Beside the original project from firmadyne and FirmAE multiple updates from [here](https://github.com/rehosting/libnvram)
+were imported.
+
 Usage
 =====
 
