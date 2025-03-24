@@ -281,4 +281,10 @@ int nvram_bufset(int idx, const char *key, const char *val) {
     return nvram_set(key, val);
 }
 
+/*  TL-WR802N(US)_V4_200 / Archer_C50v5_US_0.9.1_0.2
+    https://github.com/liyansong2018/firmware-analysis-plus/commit/7c2f6c8030b39341b6d5e8a2401a16bede1dc9a8 */
+int swClear(){
+    return 1;
+}
+
 #endif
